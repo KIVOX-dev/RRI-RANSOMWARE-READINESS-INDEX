@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @page { size: A4; margin: 2cm; }
+  body { font-family: 'DejaVu Sans', sans-serif; color: #191314; font-size: 11pt; }
+  h1 { color: #191314; border-bottom: 4px solid #ecf95a; padding-bottom: 8px; }
+  h2 { color: #191314; margin-top: 28px; border-left: 6px solid #ecf95a; padding-left: 10px; }
+  .synthetic-banner { background: #ecf95a; color: #191314; padding: 6px 12px; font-weight: bold; margin-bottom: 12px; }
+  .score-row { display: flex; gap: 24px; margin: 16px 0; }
+  .score-card { border: 2px solid #191314; border-radius: 10px; padding: 14px 20px; text-align: center; flex: 1; }
+  .score-card .value { font-size: 28pt; font-weight: bold; color: #191314; }
+  .score-card .label { font-size: 9pt; text-transform: uppercase; letter-spacing: 1px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 9.5pt; }
+  th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; }
+  th { background: #191314; color: #f4f4f4; }
+  .priority-critical { color: #b00020; font-weight: bold; }
+  .priority-high { color: #b45309; font-weight: bold; }
+  .charts { display: flex; gap: 16px; align-items: flex-start; }
+  .charts img { width: 48%; }
+  .footer-note { font-size: 8pt; color: #555; margin-top: 40px; border-top: 1px solid #ccc; padding-top: 8px; }
+</style>
+</head>
+<body>
+  {% if is_synthetic %}
+  <div class="synthetic-banner">SAMPLE / SYNTHETIC DATA — this organisation record is seeded demonstration data.</div>
+  {% endif %}
+
+  <h1>RRI — Ransomware Readiness Index<br>Executive Report</h1>
+  <p><strong>Organisation:</strong> {{ organisation.name }} &nbsp; | &nbsp; <strong>Sector:</strong> {{ organisation.sector }}</p>
+  <p><strong>Assessment completed:</strong> {{ assessment.completed_at }} &nbsp; | &nbsp; <strong>Report version:</strong> {{ version }}</p>
+
+  <h2>Summary</h2>
+  <p>
+    Maturity represents what {{ organisation.name }} reports through its assessment responses. Assurance represents
+    how much of that claim is supported by evidence or automated verification. Both metrics are computed
+    server-side from stored assessment data and are fully reproducible.
+  </p>
+  <div class="score-row">
+    <div class="score-card"><div class="value">{{ assessment.maturity_score }}/5</div><div class="label">Maturity Score</div></div>
+    <div class="score-card"><div class="value">{{ assessment.assurance_score }}%</div><div class="label">Assurance Score</div></div>
+    <div class="score-card"><div class="value">{{ assessment.progress }}%</div><div class="label">Assessment Completion</div></div>
+  </div>
+
+  <h2>Domain Scores &amp; Assurance</h2>
+  <div class="charts">
+    <img src="{{ radar_chart }}">
+    <img src="{{ gauge_chart }}">
+  </div>
+  <table>
+    <tr><th>Domain</th><th>Maturity (0-5)</th><th>Assurance (%)</th><th>Controls</th></tr>
+    {% for d in domain_scores %}
+    <tr><td>{{ d.domain }}</td><td>{{ d.maturity_score }}</td><td>{{ d.assurance_score }}</td><td>{{ d.control_count }}</td></tr>
+    {% endfor %}
+  </table>
+  <p style="font-size:8pt; color:#555;">
+    Weighting methodology: control weights are cross-checked, where applicable, against the CIS Community Defense
+    Model v2.0's published Safeguard-to-ATT&amp;CK-technique mapping (per-control citations shown in the assessment
+    UI). CDM v2.0 found that implementing IG1 Safeguards defends against {{ cis_cdm_headline.ig1_coverage_pct }}%
+    of Ransomware ATT&amp;CK (sub-)techniques, rising to {{ cis_cdm_headline.all_safeguards_coverage_pct }}% with
+    all CIS Safeguards implemented. Controls outside CDM's ATT&amp;CK-mappable scope (e.g. incident response
+    planning, audit logging, compliance process controls — CDM itself excludes these as foundational/process
+    Safeguards rather than technique-blocking ones) follow standard security-program guidance instead.
+  </p>
+
+  <h2>High-Impact Unverified Controls</h2>
+  {% if high_impact_gaps %}
+  <table>
+    <tr><th>Control</th><th>Domain</th><th>Reason</th></tr>
+    {% for g in high_impact_gaps %}
+    <tr><td>{{ g.title }}</td><td>{{ g.domain }}</td><td>{{ g.reason }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p>No high-impact controls are currently flagged as unverified.</p>
+  {% endif %}
+
+  <h2>Top Remediation Items</h2>
+  <div class="charts"><img src="{{ quadrant_chart }}" style="width:70%;"></div>
+  <table>
+    <tr><th>Priority</th><th>Issue</th><th>Domain</th><th>Impact</th><th>Effort</th></tr>
+    {% for r in top_remediation %}
+    <tr>
+      <td class="priority-{{ r.priority }}">{{ r.priority | upper }}</td>
+      <td>{{ r.issue }}</td><td>{{ r.domain }}</td><td>{{ r.impact }}</td><td>{{ r.effort }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Detection Coverage (Ransomware Pre-Encryption Kill Chain)</h2>
+  <table>
+    <tr><th>Stage</th><th>Status</th><th>Log Coverage</th><th>Reference ATT&CK Techniques</th></tr>
+    {% for stage in detection_matrix %}
+    <tr>
+      <td>{{ stage.stage }}</td><td>{{ stage.status | upper }}</td><td>{{ stage.log_coverage }}%</td>
+      <td style="font-size:8pt;">{% for t in stage.attck_techniques %}{{ t.technique_id }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p style="font-size:8pt; color:#555;">Technique IDs reference the official MITRE ATT&CK® Enterprise knowledge base (attack.mitre.org). MITRE ATT&CK is a registered trademark of The MITRE Corporation.</p>
+
+  <h2>Compliance Considerations — India Regulatory Landscape</h2>
+  <table>
+    <tr><th>Framework</th><th>Verdict</th><th>Requirements Met</th></tr>
+    {% for framework in regulatory_compliance %}
+    <tr>
+      <td>{{ framework.framework }}</td>
+      <td>{{ "Compliant" if framework.verdict == "compliant" else "Non-Compliant" }}</td>
+      <td>{{ framework.met_count }} of {{ framework.requirements | length }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <ul style="font-size:8pt;">
+    {% for ref in regulatory_summary %}
+    <li><strong>{{ ref.framework }}</strong> — {{ ref.note }}</li>
+    {% endfor %}
+  </ul>
+  <p style="font-size:8pt; color:#555;">{{ regulatory_disclaimer }}</p>
+
+  <div class="footer-note">
+    Generated by RRI on {{ generated_at }}. This report is a measurement of self-reported and verified readiness
+    signals, not a prediction, guarantee, or certification of security. Ledger reference: {{ ledger_reference }}.
+  </div>
+</body>
+</html>

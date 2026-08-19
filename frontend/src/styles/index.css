@@ -1,0 +1,63 @@
+@import "@fontsource/public-sans/400.css";
+@import "@fontsource/public-sans/500.css";
+@import "@fontsource/public-sans/600.css";
+@import "@fontsource/public-sans/700.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  @apply bg-bg text-light font-sans antialiased;
+}
+
+::selection {
+  @apply bg-accent text-ink;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #f4f4f4;
+}
+::-webkit-scrollbar-thumb {
+  background: #d4d0cf;
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #c2bdbc;
+}
+
+.card {
+  @apply bg-bg-card border border-border rounded-card p-5 shadow-sm;
+}
+
+.btn-primary {
+  @apply bg-accent text-ink font-medium px-4 py-2 rounded-md hover:bg-accent-dim transition-colors disabled:opacity-40 disabled:cursor-not-allowed;
+}
+
+.btn-secondary {
+  @apply bg-transparent border border-border text-light px-4 py-2 rounded-md hover:border-accent hover:text-accent-ink transition-colors disabled:opacity-40 disabled:cursor-not-allowed;
+}
+
+.input-field {
+  @apply bg-bg-raised border border-border rounded-md px-3 py-2 text-light placeholder:text-muted focus:outline-none focus:border-accent transition-colors w-full;
+}
+
+.label-text {
+  @apply text-xs uppercase tracking-wider text-muted;
+}
+
+.focus-ring {
+  @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg;
+}

@@ -1,0 +1,21 @@
+{
+    "name": "rri-integrity-anchor-chaincode",
+    "version": "1.0.0",
+    "description": "Minimal chaincode used as RRI's optional on-chain integrity-ledger anchor on Hyperledger Fabric — records only a 32-byte hash and a timestamp per call, mirroring the old IntegrityAnchor.sol contract's semantics.",
+    "main": "dist/index.js",
+    "engines": {
+        "node": ">=20"
+    },
+    "scripts": {
+        "build": "tsc",
+        "start:server-nontls": "fabric-chaincode-node server --chaincode-address=$CHAINCODE_SERVER_ADDRESS --chaincode-id=$CHAINCODE_ID"
+    },
+    "dependencies": {
+        "fabric-contract-api": "~2.5",
+        "fabric-shim": "~2.5"
+    },
+    "devDependencies": {
+        "@types/node": "^20.19.33",
+        "typescript": "~5.8"
+    }
+}

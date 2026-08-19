@@ -1,0 +1,4 @@
+This is a synthetic decoy file created by the RRI Canary Tripwire Kit for local ransomware-readiness demonstration purposes only. It contains no real data. Any modification, deletion, or encryption of this file is treated as a tripwire event.
+
+[SIMULATED TAMPER 2026-08-18T17:25:31.110223+00:00]
+.encrypted

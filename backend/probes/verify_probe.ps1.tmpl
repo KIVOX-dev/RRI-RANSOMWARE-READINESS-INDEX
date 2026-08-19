@@ -1,0 +1,177 @@
+# RRI Verification Probe (PowerShell / Windows)
+#
+# READ-ONLY. Performs ~12 local security configuration checks, builds a
+# structured JSON result, signs it with an Ed25519 private key, and POSTs the
+# signed result to the RRI backend ingest endpoint ONLY. No other network
+# calls are made. Requires: PowerShell 5.1+, openssl.exe on PATH (>=3.0, for
+# `pkeyutl -rawin` Ed25519 support — e.g. via Git for Windows or
+# `winget install ShiningLight.OpenSSL.Light`).
+#
+# A valid signature proves this output came from this script; it does NOT
+# prove the host was uncompromised before the script ran.
+#
+# Usage:
+#   .\verify_probe.ps1 -AssessmentId <ID> -ApiToken <TOKEN> [-BackupPath C:\Backups]
+
+param(
+    [Parameter(Mandatory=$true)][string]$AssessmentId,
+    [Parameter(Mandatory=$true)][string]$ApiToken,
+    [string]$BackupPath = "C:\Backups",
+    [string]$BackendUrl = "__BACKEND_URL__"
+)
+
+$ErrorActionPreference = "Stop"
+
+if (-not (Get-Command openssl -ErrorAction SilentlyContinue)) {
+    Write-Error "openssl (>=3.0, with Ed25519 pkeyutl support) is required and was not found on PATH."
+    exit 1
+}
+
+$TmpDir = Join-Path $env:TEMP ("rri_probe_" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $TmpDir -Force | Out-Null
+try {
+    $KeyFile = Join-Path $TmpDir "probe_private_key.pem"
+    @"
+__PROBE_PRIVATE_KEY_PEM__
+"@ | Set-Content -Path $KeyFile -Encoding ascii -NoNewline
+
+    $Timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $RawFingerprint = "$($env:COMPUTERNAME)-$((Get-CimInstance Win32_ComputerSystemProduct).UUID)"
+    $Sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $HostFingerprint = -join ($Sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($RawFingerprint)) | ForEach-Object { $_.ToString("x2") })
+
+    function New-CheckResult($CheckId, $Result, $Details) {
+        return [ordered]@{
+            check_id  = $CheckId
+            result    = $Result
+            details   = $Details
+            timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        }
+    }
+
+    $checks = @()
+
+    # CHECK_001 - SMBv1 disabled
+    try {
+        $smb1 = Get-SmbServerConfiguration -ErrorAction Stop | Select-Object -ExpandProperty EnableSMB1Protocol
+        $checks += New-CheckResult "CHECK_001" $(if (-not $smb1) { "pass" } else { "fail" }) @{ enabled = $smb1 }
+    } catch { $checks += New-CheckResult "CHECK_001" "unknown" @{ error = "$_" } }
+
+    # CHECK_002 - RDP exposure / NLA enforced
+    try {
+        $deny = (Get-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -ErrorAction Stop).fDenyTSConnections
+        $nla = (Get-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name UserAuthentication -ErrorAction SilentlyContinue).UserAuthentication
+        if ($deny -eq 1) {
+            $checks += New-CheckResult "CHECK_002" "pass" @{ note = "RDP disabled" }
+        } elseif ($nla -eq 1) {
+            $checks += New-CheckResult "CHECK_002" "pass" @{ note = "RDP enabled with NLA enforced" }
+        } else {
+            $checks += New-CheckResult "CHECK_002" "fail" @{ note = "RDP enabled without enforced NLA" }
+        }
+    } catch { $checks += New-CheckResult "CHECK_002" "unknown" @{ error = "$_" } }
+
+    # CHECK_003 - Backup path writable
+    try {
+        if (-not (Test-Path $BackupPath)) { New-Item -ItemType Directory -Path $BackupPath -Force | Out-Null }
+        $testFile = Join-Path $BackupPath (".rri_write_test_" + [guid]::NewGuid().ToString("N"))
+        Set-Content -Path $testFile -Value "test" -ErrorAction Stop
+        Remove-Item $testFile -ErrorAction SilentlyContinue
+        $checks += New-CheckResult "CHECK_003" "pass" @{ path = $BackupPath }
+    } catch { $checks += New-CheckResult "CHECK_003" "fail" @{ path = $BackupPath; error = "$_" } }
+
+    # CHECK_004 - Volume Shadow Copy service state
+    try {
+        $vss = Get-Service -Name VSS -ErrorAction Stop
+        $checks += New-CheckResult "CHECK_004" $(if ($vss.Status -eq "Running" -or $vss.StartType -ne "Disabled") { "pass" } else { "fail" }) @{ status = "$($vss.Status)"; start_type = "$($vss.StartType)" }
+    } catch { $checks += New-CheckResult "CHECK_004" "unknown" @{ error = "$_" } }
+
+    # CHECK_005 - AV/EDR service running
+    try {
+        $avNames = @("WinDefend", "CSFalconService", "SentinelAgent", "WazuhSvc", "McAfeeFramework")
+        $found = $false
+        foreach ($n in $avNames) {
+            $svc = Get-Service -Name $n -ErrorAction SilentlyContinue
+            if ($svc -and $svc.Status -eq "Running") { $found = $true }
+        }
+        $checks += New-CheckResult "CHECK_005" $(if ($found) { "pass" } else { "fail" }) @{ checked = $avNames }
+    } catch { $checks += New-CheckResult "CHECK_005" "unknown" @{ error = "$_" } }
+
+    # CHECK_006 - NTP sync
+    try {
+        $w32tm = (w32tm /query /status 2>$null) -join "`n"
+        $synced = $w32tm -match "Source:" -and $w32tm -notmatch "Source: Local CMOS Clock"
+        $checks += New-CheckResult "CHECK_006" $(if ($synced) { "pass" } else { "fail" }) @{ raw = $w32tm.Substring(0, [Math]::Min(200, $w32tm.Length)) }
+    } catch { $checks += New-CheckResult "CHECK_006" "unknown" @{ error = "$_" } }
+
+    # CHECK_007 - firewall enabled
+    try {
+        $profiles = Get-NetFirewallProfile -ErrorAction Stop
+        $allEnabled = ($profiles | Where-Object { -not $_.Enabled }).Count -eq 0
+        $checks += New-CheckResult "CHECK_007" $(if ($allEnabled) { "pass" } else { "fail" }) @{ profiles = ($profiles | Select-Object Name, Enabled) }
+    } catch { $checks += New-CheckResult "CHECK_007" "unknown" @{ error = "$_" } }
+
+    # CHECK_008 - patch recency (<=30 days)
+    try {
+        $latest = Get-HotFix -ErrorAction Stop | Sort-Object InstalledOn -Descending | Select-Object -First 1
+        $days = if ($latest.InstalledOn) { (New-TimeSpan -Start $latest.InstalledOn -End (Get-Date)).Days } else { 9999 }
+        $checks += New-CheckResult "CHECK_008" $(if ($days -le 30) { "pass" } else { "fail" }) @{ days_since_last_patch = $days }
+    } catch { $checks += New-CheckResult "CHECK_008" "unknown" @{ error = "$_" } }
+
+    # CHECK_009 - local admin count reasonable (<=5)
+    try {
+        $admins = Get-LocalGroupMember -Group "Administrators" -ErrorAction Stop
+        $checks += New-CheckResult "CHECK_009" $(if ($admins.Count -le 5) { "pass" } else { "fail" }) @{ admin_count = $admins.Count }
+    } catch { $checks += New-CheckResult "CHECK_009" "unknown" @{ error = "$_" } }
+
+    # CHECK_010 - screen lock policy
+    try {
+        $active = (Get-ItemProperty "HKCU:\Control Panel\Desktop" -Name ScreenSaveActive -ErrorAction SilentlyContinue).ScreenSaveActive
+        $secure = (Get-ItemProperty "HKCU:\Control Panel\Desktop" -Name ScreenSaverIsSecure -ErrorAction SilentlyContinue).ScreenSaverIsSecure
+        $checks += New-CheckResult "CHECK_010" $(if ($active -eq "1" -and $secure -eq "1") { "pass" } else { "fail" }) @{ active = $active; secure = $secure }
+    } catch { $checks += New-CheckResult "CHECK_010" "unknown" @{ error = "$_" } }
+
+    # CHECK_011 - Remote Registry service disabled
+    try {
+        $rr = Get-Service -Name RemoteRegistry -ErrorAction Stop
+        $checks += New-CheckResult "CHECK_011" $(if ($rr.StartType -eq "Disabled") { "pass" } else { "fail" }) @{ start_type = "$($rr.StartType)" }
+    } catch { $checks += New-CheckResult "CHECK_011" "unknown" @{ error = "$_" } }
+
+    # CHECK_012 - Disk encryption (BitLocker)
+    try {
+        $vol = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop
+        $checks += New-CheckResult "CHECK_012" $(if ($vol.ProtectionStatus -eq "On") { "pass" } else { "fail" }) @{ protection_status = "$($vol.ProtectionStatus)" }
+    } catch { $checks += New-CheckResult "CHECK_012" "unknown" @{ error = "$_" } }
+
+    $ChecksJson = $checks | ConvertTo-Json -Compress -Depth 6
+    if ($checks.Count -eq 1) { $ChecksJson = "[$ChecksJson]" }
+
+    $Message = "$AssessmentId|$HostFingerprint|$Timestamp|$ChecksJson"
+    $MessageFile = Join-Path $TmpDir "message.bin"
+    # [Text.Encoding]::UTF8 is the *BOM-emitting* shared UTF8Encoding instance
+    # in .NET, and WriteAllText writes that BOM as a 3-byte preamble before
+    # the content. That silently signs "<BOM>message" while the backend
+    # verifies plain "message" bytes, so every signature would fail — use an
+    # explicit no-BOM UTF8Encoding instead.
+    $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [IO.File]::WriteAllText($MessageFile, $Message, $Utf8NoBom)
+
+    $SigFile = Join-Path $TmpDir "signature.bin"
+    & openssl pkeyutl -sign -inkey $KeyFile -rawin -in $MessageFile -out $SigFile
+    $SignatureB64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($SigFile))
+
+    $Body = @{
+        assessment_id    = $AssessmentId
+        host_fingerprint = $HostFingerprint
+        timestamp        = $Timestamp
+        checks           = $checks
+        checks_raw       = $ChecksJson
+        signature        = $SignatureB64
+    } | ConvertTo-Json -Depth 8
+
+    Write-Host "Submitting probe result for assessment $AssessmentId to $BackendUrl/probe/ingest ..."
+    Invoke-RestMethod -Uri "$BackendUrl/probe/ingest" -Method Post -Headers @{ Authorization = "Bearer $ApiToken" } -ContentType "application/json" -Body $Body
+    Write-Host "Done."
+}
+finally {
+    Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
+}

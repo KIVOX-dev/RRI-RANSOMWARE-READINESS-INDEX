@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+# RRI Verification Probe (Bash / Linux)
+#
+# READ-ONLY. Performs ~12 local security configuration checks, builds a
+# structured JSON result, signs it with an Ed25519 private key, and POSTs the
+# signed result to the RRI backend ingest endpoint ONLY. No other network
+# calls are made. Requires: bash, curl, openssl (>=3.0 for `pkeyutl -rawin`
+# Ed25519 support), coreutils (sha256sum, base64).
+#
+# A valid signature proves this output came from this script; it does NOT
+# prove the host was uncompromised before the script ran.
+#
+# Usage:
+#   ./verify_probe.sh --assessment-id <ID> --token <API_TOKEN> [--backup-path /var/backups]
+
+set -euo pipefail
+
+BACKEND_URL="__BACKEND_URL__"
+ASSESSMENT_ID=""
+API_TOKEN=""
+BACKUP_PATH="/var/backups"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --assessment-id) ASSESSMENT_ID="$2"; shift 2 ;;
+    --token) API_TOKEN="$2"; shift 2 ;;
+    --backup-path) BACKUP_PATH="$2"; shift 2 ;;
+    *) echo "Unknown argument: $1"; exit 1 ;;
+  esac
+done
+
+if [[ -z "$ASSESSMENT_ID" || -z "$API_TOKEN" ]]; then
+  echo "Usage: $0 --assessment-id <ID> --token <API_TOKEN> [--backup-path /var/backups]"
+  exit 1
+fi
+
+if ! command -v openssl >/dev/null 2>&1; then
+  echo "ERROR: openssl (>=3.0, with Ed25519 pkeyutl support) is required and was not found on PATH."
+  exit 1
+fi
+
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+KEY_FILE="$TMP_DIR/probe_private_key.pem"
+cat > "$KEY_FILE" << 'PROBE_PRIVATE_KEY_EOF'
+__PROBE_PRIVATE_KEY_PEM__
+PROBE_PRIVATE_KEY_EOF
+
+TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+HOST_FINGERPRINT="$(cat /etc/machine-id 2>/dev/null || hostnamectl --static 2>/dev/null || hostname)"
+HOST_FINGERPRINT="$(echo -n "$HOST_FINGERPRINT-$(hostname)" | sha256sum | awk '{print $1}')"
+
+result() { # $1=check_id $2=result $3=detail_json
+  echo "{\"check_id\":\"$1\",\"result\":\"$2\",\"details\":$3,\"timestamp\":\"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"}"
+}
+
+CHECKS=()
+
+# CHECK_001 - SMBv1 disabled (no smb.conf negotiating SMBv1, or samba absent = pass)
+if command -v testparm >/dev/null 2>&1 && [[ -f /etc/samba/smb.conf ]]; then
+  if testparm -s 2>/dev/null | grep -qi "min protocol.*SMB2\|min protocol.*SMB3"; then
+    CHECKS+=("$(result CHECK_001 pass '{"note":"samba min protocol >= SMB2"}')")
+  else
+    CHECKS+=("$(result CHECK_001 fail '{"note":"samba present without enforced min protocol >= SMB2"}')")
+  fi
+else
+  CHECKS+=("$(result CHECK_001 pass '{"note":"no samba service present"}')")
+fi
+
+# CHECK_002 - RDP/remote desktop exposure (xrdp bound to non-loopback)
+if command -v ss >/dev/null 2>&1 && ss -tlnp 2>/dev/null | grep -q ':3389'; then
+  if ss -tlnp 2>/dev/null | grep ':3389' | grep -qv '127.0.0.1\|::1'; then
+    CHECKS+=("$(result CHECK_002 fail '{"note":"remote desktop port 3389 listening on non-loopback interface"}')")
+  else
+    CHECKS+=("$(result CHECK_002 pass '{"note":"remote desktop port bound to loopback only"}')")
+  fi
+else
+  CHECKS+=("$(result CHECK_002 pass '{"note":"no remote desktop service listening"}')")
+fi
+
+# CHECK_003 - Backup path writability (informational: writable from this host)
+mkdir -p "$BACKUP_PATH" 2>/dev/null || true
+if [[ -w "$BACKUP_PATH" ]]; then
+  CHECKS+=("$(result CHECK_003 pass "{\"note\":\"backup path writable\",\"path\":\"$BACKUP_PATH\"}")")
+else
+  CHECKS+=("$(result CHECK_003 fail "{\"note\":\"backup path not writable or missing\",\"path\":\"$BACKUP_PATH\"}")")
+fi
+
+# CHECK_004 - Shadow-copy equivalent: LVM snapshot capability present
+if command -v lvcreate >/dev/null 2>&1; then
+  CHECKS+=("$(result CHECK_004 pass '{"note":"LVM snapshot tooling available"}')")
+else
+  CHECKS+=("$(result CHECK_004 fail '{"note":"no LVM snapshot tooling detected"}')")
+fi
+
+# CHECK_005 - AV/EDR service presence
+AV_FOUND="fail"
+for svc in clamav-daemon falcon-sensor sentinelone wazuh-agent crowdstrike; do
+  if systemctl is-active --quiet "$svc" 2>/dev/null; then AV_FOUND="pass"; fi
+done
+CHECKS+=("$(result CHECK_005 "$AV_FOUND" '{"note":"checked common AV/EDR service names"}')")
+
+# CHECK_006 - NTP sync
+if command -v timedatectl >/dev/null 2>&1 && [[ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" == "yes" ]]; then
+  CHECKS+=("$(result CHECK_006 pass '{}')")
+else
+  CHECKS+=("$(result CHECK_006 fail '{"note":"NTP sync not confirmed via timedatectl"}')")
+fi
+
+# CHECK_007 - firewall enabled
+FW="fail"
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi "active"; then FW="pass"; fi
+if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state 2>/dev/null | grep -qi "running"; then FW="pass"; fi
+CHECKS+=("$(result CHECK_007 "$FW" '{}')")
+
+# CHECK_008 - patch recency (last package update within 30 days)
+LAST_UPDATE_TS=0
+if [[ -f /var/log/apt/history.log ]]; then LAST_UPDATE_TS=$(stat -c %Y /var/log/apt/history.log 2>/dev/null || echo 0); fi
+if [[ -d /var/lib/rpm ]]; then LAST_UPDATE_TS=$(stat -c %Y /var/lib/rpm 2>/dev/null || echo 0); fi
+NOW_TS=$(date +%s)
+if [[ "$LAST_UPDATE_TS" -gt 0 && $(( (NOW_TS - LAST_UPDATE_TS) / 86400 )) -le 30 ]]; then
+  CHECKS+=("$(result CHECK_008 pass '{"note":"package metadata updated within 30 days"}')")
+else
+  CHECKS+=("$(result CHECK_008 fail '{"note":"no recent package update detected within 30 days"}')")
+fi
+
+# CHECK_009 - local admin (sudo/wheel) count reasonable (<=5)
+# `awk 'END{print NR+0}'` already prints a safe "0" default and always exits
+# 0 itself, so the pipeline's *output* is trustworthy on its own. But under
+# `pipefail`, the pipeline's *exit status* still reflects `getent` failing
+# (e.g. missing on a minimal distro, or "wheel"/"sudo" not both existing —
+# genuinely common across distros) even though later stages succeeded and
+# already produced correct output. A `||` fallback would then fire *after*
+# that output was already captured, duplicating it. Disabling pipefail for
+# just this one assignment — whose last stage is guaranteed to succeed — is
+# the correct fix; pipefail stays on everywhere else (notably the Ed25519
+# signing step below, where a silent partial failure would be dangerous).
+set +o pipefail
+ADMIN_COUNT=$(getent group sudo wheel 2>/dev/null | awk -F: '{print $4}' | tr ',' '\n' | awk 'NF' | sort -u | awk 'END{print NR+0}')
+set -o pipefail
+if [[ "$ADMIN_COUNT" -le 5 ]]; then
+  CHECKS+=("$(result CHECK_009 pass "{\"admin_count\":$ADMIN_COUNT}")")
+else
+  CHECKS+=("$(result CHECK_009 fail "{\"admin_count\":$ADMIN_COUNT}")")
+fi
+
+# CHECK_010 - screen lock policy (best-effort; not_applicable on headless)
+CHECKS+=("$(result CHECK_010 not_applicable '{"note":"headless/server checks cannot verify desktop screen-lock policy"}')")
+
+# CHECK_011 - no unauthenticated remote admin listeners (VNC without password heuristic)
+if command -v ss >/dev/null 2>&1 && ss -tlnp 2>/dev/null | grep -q ':5900'; then
+  CHECKS+=("$(result CHECK_011 fail '{"note":"VNC listener detected on 5900"}')")
+else
+  CHECKS+=("$(result CHECK_011 pass '{}')")
+fi
+
+# CHECK_012 - disk encryption (LUKS)
+if command -v lsblk >/dev/null 2>&1 && lsblk -o FSTYPE 2>/dev/null | grep -qi crypto_LUKS; then
+  CHECKS+=("$(result CHECK_012 pass '{}')")
+else
+  CHECKS+=("$(result CHECK_012 fail '{"note":"no LUKS-encrypted block devices detected"}')")
+fi
+
+CHECKS_RAW="[$(IFS=,; echo "${CHECKS[*]}")]"
+
+MESSAGE="${ASSESSMENT_ID}|${HOST_FINGERPRINT}|${TIMESTAMP}|${CHECKS_RAW}"
+printf '%s' "$MESSAGE" > "$TMP_DIR/message.bin"
+
+SIGNATURE_B64="$(openssl pkeyutl -sign -inkey "$KEY_FILE" -rawin -in "$TMP_DIR/message.bin" | base64 | tr -d '\n')"
+
+BODY=$(cat << JSON_EOF
+{"assessment_id":"${ASSESSMENT_ID}","host_fingerprint":"${HOST_FINGERPRINT}","timestamp":"${TIMESTAMP}","checks":${CHECKS_RAW},"checks_raw":$(printf '%s' "$CHECKS_RAW" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$(echo "$CHECKS_RAW" | sed 's/"/\\"/g')"),"signature":"${SIGNATURE_B64}"}
+JSON_EOF
+)
+
+echo "Submitting probe result for assessment ${ASSESSMENT_ID} to ${BACKEND_URL}/probe/ingest ..."
+curl -sS -X POST "${BACKEND_URL}/probe/ingest" \
+  -H "Authorization: Bearer ${API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "$BODY"
+echo ""
+echo "Done."

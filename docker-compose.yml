@@ -1,0 +1,225 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-rri_minio_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-rri_minio_secret_change_me}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # --- Hyperledger Fabric: minimal single-org network (1 CA-less cryptogen
+  # identity set, 1 single-node Raft orderer, 1 peer) plus a Node.js
+  # "fabric-gateway-api" sidecar, since Fabric's officially-supported client
+  # SDK (Fabric Gateway) only ships Go/Node/Java clients, not Python —
+  # verified live against current docs, not assumed. See fabric-network/ and
+  # fabric-gateway-api/ for details. ---
+
+  crypto-gen:
+    image: hyperledger/fabric-tools:2.5
+    volumes:
+      - ./fabric-network:/fabric-network
+    working_dir: /fabric-network
+    entrypoint: ["bash", "/fabric-network/scripts/crypto-gen.sh"]
+
+  orderer.example.com:
+    image: hyperledger/fabric-orderer:2.5
+    depends_on:
+      crypto-gen:
+        condition: service_completed_successfully
+    environment:
+      FABRIC_LOGGING_SPEC: INFO
+      ORDERER_GENERAL_LISTENADDRESS: 0.0.0.0
+      ORDERER_GENERAL_LISTENPORT: "7050"
+      ORDERER_GENERAL_LOCALMSPID: OrdererMSP
+      ORDERER_GENERAL_LOCALMSPDIR: /var/hyperledger/orderer/msp
+      ORDERER_GENERAL_TLS_ENABLED: "true"
+      ORDERER_GENERAL_TLS_PRIVATEKEY: /var/hyperledger/orderer/tls/server.key
+      ORDERER_GENERAL_TLS_CERTIFICATE: /var/hyperledger/orderer/tls/server.crt
+      ORDERER_GENERAL_TLS_ROOTCAS: "[/var/hyperledger/orderer/tls/ca.crt]"
+      ORDERER_GENERAL_CLUSTER_CLIENTCERTIFICATE: /var/hyperledger/orderer/tls/server.crt
+      ORDERER_GENERAL_CLUSTER_CLIENTPRIVATEKEY: /var/hyperledger/orderer/tls/server.key
+      ORDERER_GENERAL_CLUSTER_ROOTCAS: "[/var/hyperledger/orderer/tls/ca.crt]"
+      # No system-channel genesis bootstrap — channels are joined dynamically
+      # via the channel participation admin API instead (current standard).
+      ORDERER_GENERAL_BOOTSTRAPMETHOD: none
+      ORDERER_CHANNELPARTICIPATION_ENABLED: "true"
+      ORDERER_ADMIN_TLS_ENABLED: "true"
+      ORDERER_ADMIN_TLS_CERTIFICATE: /var/hyperledger/orderer/tls/server.crt
+      ORDERER_ADMIN_TLS_PRIVATEKEY: /var/hyperledger/orderer/tls/server.key
+      ORDERER_ADMIN_TLS_ROOTCAS: "[/var/hyperledger/orderer/tls/ca.crt]"
+      ORDERER_ADMIN_TLS_CLIENTROOTCAS: "[/var/hyperledger/orderer/tls/ca.crt]"
+      ORDERER_ADMIN_LISTENADDRESS: 0.0.0.0:7053
+    working_dir: /root
+    command: orderer
+    volumes:
+      - ./fabric-network/organizations/ordererOrganizations/example.com/orderers/orderer.example.com/msp:/var/hyperledger/orderer/msp
+      - ./fabric-network/organizations/ordererOrganizations/example.com/orderers/orderer.example.com/tls:/var/hyperledger/orderer/tls
+      - orderer-data:/var/hyperledger/production/orderer
+    ports:
+      - "7050:7050"
+      - "7053:7053"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/7050' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  peer0.org1.example.com:
+    image: hyperledger/fabric-peer:2.5
+    depends_on:
+      crypto-gen:
+        condition: service_completed_successfully
+    environment:
+      FABRIC_CFG_PATH: /etc/hyperledger/peercfg
+      FABRIC_LOGGING_SPEC: INFO
+      CORE_PEER_TLS_ENABLED: "true"
+      CORE_PEER_PROFILE_ENABLED: "false"
+      CORE_PEER_TLS_CERT_FILE: /etc/hyperledger/fabric/tls/server.crt
+      CORE_PEER_TLS_KEY_FILE: /etc/hyperledger/fabric/tls/server.key
+      CORE_PEER_TLS_ROOTCERT_FILE: /etc/hyperledger/fabric/tls/ca.crt
+      CORE_PEER_ID: peer0.org1.example.com
+      CORE_PEER_ADDRESS: peer0.org1.example.com:7051
+      CORE_PEER_LISTENADDRESS: 0.0.0.0:7051
+      CORE_PEER_CHAINCODEADDRESS: peer0.org1.example.com:7052
+      CORE_PEER_CHAINCODELISTENADDRESS: 0.0.0.0:7052
+      CORE_PEER_GOSSIP_BOOTSTRAP: peer0.org1.example.com:7051
+      CORE_PEER_GOSSIP_EXTERNALENDPOINT: peer0.org1.example.com:7051
+      CORE_PEER_LOCALMSPID: Org1MSP
+      CORE_PEER_MSPCONFIGPATH: /etc/hyperledger/fabric/msp
+      CORE_CHAINCODE_EXECUTETIMEOUT: 300s
+      # No externalBuilders config needed — our chaincode is packaged as a
+      # native "ccaas" type (see fabric-network/scripts/channel-setup.sh),
+      # which tells the peer to connect to an already-running chaincode
+      # server rather than build/launch one itself. No Docker-socket mount
+      # needed either, unlike the peer's classic Docker chaincode builder.
+    volumes:
+      - ./fabric-network/organizations/peerOrganizations/org1.example.com/peers/peer0.org1.example.com:/etc/hyperledger/fabric
+      - ./fabric-network/peercfg:/etc/hyperledger/peercfg
+      - peer0-data:/var/hyperledger/production
+    working_dir: /root
+    command: peer node start
+    ports:
+      - "7051:7051"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/7051' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  channel-setup:
+    image: hyperledger/fabric-tools:2.5
+    depends_on:
+      orderer.example.com:
+        condition: service_healthy
+      peer0.org1.example.com:
+        condition: service_healthy
+    volumes:
+      - ./fabric-network:/fabric-network
+    working_dir: /fabric-network
+    entrypoint: ["bash", "/fabric-network/scripts/channel-setup.sh"]
+
+  chaincode:
+    build: ./chaincode
+    depends_on:
+      channel-setup:
+        condition: service_completed_successfully
+    volumes:
+      - ./fabric-network/channel-artifacts:/channel-artifacts:ro
+
+  fabric-gateway-api:
+    build: ./fabric-gateway-api
+    depends_on:
+      channel-setup:
+        condition: service_completed_successfully
+      chaincode:
+        condition: service_started
+    environment:
+      CHANNEL_NAME: rrichannel
+      CHAINCODE_NAME: rri-anchor
+      MSP_ID: Org1MSP
+      PEER_ENDPOINT: peer0.org1.example.com:7051
+      PEER_HOST_ALIAS: peer0.org1.example.com
+      CRYPTO_PATH: /organizations/peerOrganizations/org1.example.com
+    volumes:
+      - ./fabric-network/organizations:/organizations:ro
+    ports:
+      - "3001:3001"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:3001/status',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  backend:
+    build: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_PUBLIC_ENDPOINT: localhost:9000
+      REDIS_URL: redis://redis:6379/0
+      FRONTEND_ORIGIN: http://localhost:5180
+      PUBLIC_BACKEND_URL: http://localhost:8010
+      FABRIC_GATEWAY_URL: http://fabric-gateway-api:3001
+      # Docker Desktop on Windows doesn't reliably forward native filesystem
+      # events across the host<->container bind mount, so watchfiles' default
+      # inotify watch can silently miss host-side edits. Force polling.
+      WATCHFILES_FORCE_POLLING: "true"
+    ports:
+      - "8010:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      # Not "condition: service_healthy" on purpose — the ledger's hash
+      # chain must keep working even if the Fabric network is slow to start
+      # or goes down; fabric_service.py already treats it as fully optional.
+      fabric-gateway-api:
+        condition: service_started
+    command: >
+      sh -c "python -m app.seed.seed && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  frontend:
+    build: ./frontend
+    environment:
+      VITE_API_BASE_URL: http://localhost:8010
+    ports:
+      - "5180:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  redis-data:
+  minio-data:
+  orderer-data:
+  peer0-data:

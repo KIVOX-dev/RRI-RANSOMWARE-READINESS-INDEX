@@ -1,0 +1,11 @@
+# Trimmed from hyperledger/fabric-samples test-network's 4-orderer Raft demo
+# down to a single-node Raft orderer (Solo consensus is fully removed in
+# Fabric v3 — single-node Raft is the current supported equivalent).
+OrdererOrgs:
+  - Name: Orderer
+    Domain: example.com
+    EnableNodeOUs: true
+    Specs:
+      - Hostname: orderer
+        SANS:
+          - localhost

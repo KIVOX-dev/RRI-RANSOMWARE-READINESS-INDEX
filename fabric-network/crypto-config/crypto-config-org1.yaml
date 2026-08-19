@@ -1,0 +1,12 @@
+# Adapted from hyperledger/fabric-samples test-network (single peer, single
+# extra user — already minimal, unchanged from upstream).
+PeerOrgs:
+  - Name: Org1
+    Domain: org1.example.com
+    EnableNodeOUs: true
+    Template:
+      Count: 1
+      SANS:
+        - localhost
+    Users:
+      Count: 1

@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @page { size: A4; margin: 2cm; }
+  body { font-family: 'DejaVu Sans', sans-serif; color: #191314; font-size: 9.5pt; }
+  h1 { border-bottom: 4px solid #ecf95a; padding-bottom: 8px; }
+  h2 { margin-top: 24px; border-left: 6px solid #ecf95a; padding-left: 10px; }
+  table { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 10px 0; font-size: 8.5pt; }
+  th, td { border: 1px solid #ccc; padding: 5px 6px; text-align: left; word-break: break-word; }
+  th { background: #191314; color: #f4f4f4; }
+  .pass { color: #1a7f37; font-weight: bold; }
+  .fail { color: #b00020; font-weight: bold; }
+</style>
+</head>
+<body>
+  <h1>RRI — Technical Annexure</h1>
+  <p><strong>Organisation:</strong> {{ organisation.name }} &nbsp;|&nbsp; <strong>Assessment ID:</strong> {{ assessment.id }} &nbsp;|&nbsp; <strong>Version:</strong> {{ version }}</p>
+
+  <h2>Assessment Metadata</h2>
+  <table>
+    <tr><th>Sector</th><td>{{ assessment.sector }}</td><th>Role</th><td>{{ assessment.role }}</td></tr>
+    <tr><th>Started</th><td>{{ assessment.started_at }}</td><th>Completed</th><td>{{ assessment.completed_at }}</td></tr>
+    <tr><th>Total Controls</th><td>{{ assessment.total_controls }}</td><th>Answered</th><td>{{ assessment.answered_controls }}</td></tr>
+  </table>
+
+  <h2>Control-by-Control Results</h2>
+  <table>
+    <tr><th>Control ID</th><th>Domain</th><th>Answer</th><th>Score</th><th>Impact</th><th>Evidence</th><th>Probe</th></tr>
+    {% for row in control_rows %}
+    <tr>
+      <td>{{ row.control_id }}</td><td>{{ row.domain }}</td><td>{{ row.answer }}</td><td>{{ row.score }}</td>
+      <td>{{ row.impact_level }}</td><td>{{ row.evidence_status }}</td><td>{{ row.probe_status }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Verification Probe Runs</h2>
+  <table>
+    <colgroup>
+      <col style="width: 25%;"><col style="width: 40%;"><col style="width: 15%;"><col style="width: 20%;">
+    </colgroup>
+    <tr><th>Timestamp</th><th>Host Fingerprint</th><th>Signature Status</th><th>Checks Passed</th></tr>
+    {% for run in probe_runs %}
+    <tr>
+      <td style="font-size:7.5pt;">{{ run.timestamp }}</td>
+      <td style="font-size:7.5pt; word-break: break-all;">{{ run.host_fingerprint }}</td>
+      <td>{{ run.verification_status }}</td>
+      <td>{{ run.pass_count }}/{{ run.total_count }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Detection Coverage Matrix</h2>
+  <table>
+    <tr><th>Stage</th><th>Status</th><th>Supporting Controls</th><th>Log Coverage</th><th>ATT&CK Techniques</th></tr>
+    {% for stage in detection_matrix %}
+    <tr>
+      <td>{{ stage.stage }}</td><td>{{ stage.status }}</td><td>{{ stage.supporting_controls | join(', ') }}</td><td>{{ stage.log_coverage }}%</td>
+      <td style="font-size:8pt;">{% for t in stage.attck_techniques %}{{ t.technique_id }} ({{ t.name }}){% if not loop.last %}, {% endif %}{% endfor %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Log Source Coverage</h2>
+  <table>
+    <tr><th>Source</th><th>Enabled</th><th>Retention (days)</th><th>Monitored</th><th>Gaps</th></tr>
+    {% for s in log_sources %}
+    <tr><td>{{ s.source_name }}</td><td>{{ s.enabled }}</td><td>{{ s.retention_days }}</td><td>{{ s.monitored }}</td><td>{{ s.gaps | join(', ') }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h2>Backup Resilience</h2>
+  {% if backup %}
+  <table>
+    <tr><th>Destination</th><td>{{ backup.backup_destination }}</td><th>Writable</th><td>{{ backup.is_writable_from_production }}</td></tr>
+    <tr><th>Frequency</th><td>{{ backup.backup_frequency }}</td><th>Last Backup</th><td>{{ backup.last_successful_backup }}</td></tr>
+    <tr><th>Last Restore Test</th><td>{{ backup.last_restore_test }}</td><th>Restore Test Gap</th><td>{{ backup.restore_test_gap }}</td></tr>
+  </table>
+  <p>{{ backup.risk_note }}</p>
+  {% else %}
+  <p>No backup resilience data recorded for this assessment.</p>
+  {% endif %}
+
+  <h2>Full Remediation Roadmap</h2>
+  <table>
+    <tr><th>Priority</th><th>Issue</th><th>Domain</th><th>Impact</th><th>Effort</th><th>Recommended Action</th></tr>
+    {% for r in remediation_items %}
+    <tr><td>{{ r.priority }}</td><td>{{ r.issue }}</td><td>{{ r.domain }}</td><td>{{ r.impact }}</td><td>{{ r.effort }}</td><td>{{ r.recommended_action }}</td></tr>
+    {% endfor %}
+  </table>
+</body>
+</html>
