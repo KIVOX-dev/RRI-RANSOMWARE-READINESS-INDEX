@@ -1,11 +1,11 @@
 import asyncio
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import CurrentUser, get_current_user
 from app.core.cache import get_redis
-from app.core.security import decode_access_token
+from app.core.security import create_access_token, decode_access_token
 from app.models.canary import CanaryDeploySettings
 from app.services import canary_service
 

@@ -109,10 +109,10 @@ def _record_event(canary: dict, event_type: str, severity: str) -> dict:
     return event
 
 
-def simulate_touch(canary_id: str) -> dict:
+def simulate_touch(canary_id: str, organisation_id: str) -> dict:
     """Demo-only: simulates an attacker touching/encrypting a canary file so
     the tripwire fires immediately rather than waiting for the poll cycle."""
-    canary = canary_registry_repo.find_one({"canary_id": canary_id})
+    canary = canary_registry_repo.find_one({"canary_id": canary_id, "organisation_id": organisation_id})
     if not canary:
         raise ValueError("Canary not found")
     path = Path(canary["file_path"])

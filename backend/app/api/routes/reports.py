@@ -23,4 +23,6 @@ def list_reports(assessment_id: str, user: CurrentUser = Depends(get_current_use
 
 @router.get("/detail/{report_id}", response_model=ReportOut)
 def get_report(report_id: str, user: CurrentUser = Depends(get_current_user)):
-    return report_service.get_report(report_id)
+    report = report_service.get_report(report_id)
+    assert_org_access(user, report["organisation_id"])
+    return report
