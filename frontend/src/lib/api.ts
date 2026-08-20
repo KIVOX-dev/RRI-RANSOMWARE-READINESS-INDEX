@@ -18,6 +18,12 @@ export function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+// Fired on any 401 response. AuthProvider listens for this and does an
+// in-app redirect instead of the interceptor forcing a full page reload
+// itself, which would otherwise wipe in-memory state (e.g. an in-progress
+// AssessmentFlow) the instant any background poll's token expired.
+export const AUTH_EXPIRED_EVENT = "rri:auth-expired";
+
 api.interceptors.request.use((config) => {
   const token = getToken();
   if (token) {
@@ -33,7 +39,7 @@ api.interceptors.response.use(
     if (error?.response?.status === 401) {
       clearToken();
       if (!window.location.pathname.startsWith("/login")) {
-        window.location.href = "/login";
+        window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT));
       }
     }
     return Promise.reject(error);

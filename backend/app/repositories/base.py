@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from bson import ObjectId
+from bson.errors import InvalidId
 from pymongo.collection import Collection
 
 from app.core.mongo import get_db
@@ -18,7 +19,10 @@ def now_utc() -> datetime:
 def oid(value: Any) -> ObjectId:
     if isinstance(value, ObjectId):
         return value
-    return ObjectId(str(value))
+    try:
+        return ObjectId(str(value))
+    except InvalidId as exc:
+        raise ValueError(f"Invalid id: {value!r}") from exc
 
 
 def to_str_id(doc: Optional[dict]) -> Optional[dict]:

@@ -1,5 +1,5 @@
 """A5 — Backup Resilience Deep-Dive."""
-from datetime import date
+from datetime import datetime, timezone
 
 from app.models.backup import BackupResilienceIn
 from app.repositories.collections import backup_resilience_repo
@@ -8,7 +8,7 @@ from app.repositories.collections import backup_resilience_repo
 def upsert_backup_resilience(assessment_id: str, organisation_id: str, payload: BackupResilienceIn) -> dict:
     restore_test_gap = payload.last_restore_test is None
     if not restore_test_gap and payload.last_restore_test:
-        days_since = (date.today() - payload.last_restore_test).days
+        days_since = (datetime.now(timezone.utc).date() - payload.last_restore_test).days
         restore_test_gap = days_since > 180
 
     risk_note = (

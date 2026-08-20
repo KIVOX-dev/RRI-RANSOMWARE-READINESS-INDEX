@@ -91,7 +91,19 @@ def presigned_get_url(bucket: str, object_key: str, expires_seconds: int = 3600)
     from datetime import timedelta
 
     client = get_minio_public_client()
-    return client.presigned_get_object(bucket, object_key, expires=timedelta(seconds=expires_seconds))
+    return client.presigned_get_object(
+        bucket,
+        object_key,
+        expires=timedelta(seconds=expires_seconds),
+        # Force a download instead of an inline render. The stored
+        # Content-Type is the uploader's client-declared MIME type (never
+        # content-sniffed), and this presigned URL is served directly from
+        # MinIO, bypassing the API's own X-Content-Type-Options: nosniff
+        # middleware — without this, a file uploaded with a false but
+        # allow-listed Content-Type (e.g. text/plain) containing HTML/script
+        # could be sniffed and rendered by a browser opening the link.
+        response_headers={"response-content-disposition": "attachment"},
+    )
 
 
 def remove_object(bucket: str, object_key: str) -> None:

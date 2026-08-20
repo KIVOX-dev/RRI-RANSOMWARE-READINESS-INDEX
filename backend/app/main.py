@@ -31,6 +31,7 @@ from app.api.routes import (
 )
 from app.core.config import get_settings
 from app.core.mongo import ensure_indexes
+from app.core.rate_limit import limiter
 from app.core.storage import ensure_buckets
 from app.services.canary_service import start_watcher_thread
 from app.services.fabric_service import start_reconciliation_thread
@@ -38,11 +39,16 @@ from app.services.fabric_service import start_reconciliation_thread
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("rri")
 
-limiter = Limiter(key_func=get_remote_address)
+_DEFAULT_JWT_SECRET = "dev-secret-change-me"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if settings.environment == "production" and settings.jwt_secret_key == _DEFAULT_JWT_SECRET:
+        raise RuntimeError(
+            "JWT_SECRET_KEY is still set to the insecure development default. "
+            "Set a real secret before starting in ENVIRONMENT=production."
+        )
     try:
         ensure_indexes()
         ensure_buckets()

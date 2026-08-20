@@ -67,13 +67,22 @@ def recompute_assessment_scores(assessment_id: str) -> dict:
     impact_multipliers = config["impact_multipliers"]
     rules = config["assurance_rules"]
 
-    relevant_questions = questions_repo.find(
-        {
-            "active": True,
-            "sector": {"$in": [assessment["sector"], "generic"]},
-            "roles": assessment["role"],
-        }
-    )
+    # Must mirror routing_service.get_routed_questions' query exactly: Basic
+    # mode is a fixed, role-agnostic control subset (basic_track=True), not
+    # the normal role filter applied to fewer controls. Using the role filter
+    # here for basic-mode assessments would silently drop answers to any
+    # basic-track control tagged technical-role-only (about half of them),
+    # understating scores for non-technical roles despite every question
+    # having been answered.
+    scoring_query = {
+        "active": True,
+        "sector": {"$in": [assessment["sector"], "generic"]},
+    }
+    if assessment.get("mode") == "basic":
+        scoring_query["basic_track"] = True
+    else:
+        scoring_query["roles"] = assessment["role"]
+    relevant_questions = questions_repo.find(scoring_query)
     total_controls = len(relevant_questions)
 
     answers = answers_repo.find({"assessment_id": assessment_id})

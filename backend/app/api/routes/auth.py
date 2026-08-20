@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from app.api.deps import CurrentUser, get_current_user
+from app.core.rate_limit import limiter
 from app.models.auth import LoginRequest, RegisterRequest, TokenResponse, UserOut
 from app.repositories.collections import users_repo
 from app.services import auth_service
@@ -9,12 +10,14 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/register", response_model=TokenResponse)
-def register(payload: RegisterRequest):
+@limiter.limit("10/minute")
+def register(request: Request, payload: RegisterRequest):
     return auth_service.register(payload)
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(payload: LoginRequest):
+@limiter.limit("10/minute")
+def login(request: Request, payload: LoginRequest):
     return auth_service.login(payload)
 
 

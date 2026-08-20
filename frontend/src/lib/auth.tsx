@@ -1,7 +1,8 @@
+import axios from "axios";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { AuthAPI } from "@/api/client";
-import { apiErrorMessage, clearToken, getToken, setToken } from "@/lib/api";
+import { apiErrorMessage, AUTH_EXPIRED_EVENT, clearToken, getToken, setToken } from "@/lib/api";
 import type { User } from "@/types";
 
 interface RegisterPayload {
@@ -25,6 +26,7 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
 
   useEffect(() => {
     const token = getToken();
@@ -34,18 +36,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     AuthAPI.me()
       .then(setUser)
-      .catch(() => clearToken())
+      .catch((err) => {
+        // Only a real 401 means the session is actually invalid/expired —
+        // a transient network failure or a 5xx shouldn't silently wipe a
+        // perfectly valid token and log the user out with no explanation.
+        if (axios.isAxiosError(err) && err.response?.status === 401) {
+          clearToken();
+          setUser(null);
+        }
+      })
       .finally(() => setLoading(false));
   }, []);
 
+  useEffect(() => {
+    function handleAuthExpired() {
+      setUser(null);
+      navigate("/login");
+    }
+    window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+  }, [navigate]);
+
   async function login(email: string, password: string) {
     const result = await AuthAPI.login({ email, password });
+    if (!result?.access_token || !result?.user) {
+      throw new Error("Login response was missing an access token or user.");
+    }
     setToken(result.access_token);
     setUser(result.user);
   }
 
   async function register(payload: RegisterPayload) {
     const result = await AuthAPI.register(payload);
+    if (!result?.access_token || !result?.user) {
+      throw new Error("Registration response was missing an access token or user.");
+    }
     setToken(result.access_token);
     setUser(result.user);
   }
@@ -65,12 +90,3 @@ export function useAuth() {
 }
 
 export { apiErrorMessage };
-
-export function useRequireAuth() {
-  const { user, loading } = useAuth();
-  const navigate = useNavigate();
-  useEffect(() => {
-    if (!loading && !user) navigate("/login");
-  }, [loading, user, navigate]);
-  return { user, loading };
-}

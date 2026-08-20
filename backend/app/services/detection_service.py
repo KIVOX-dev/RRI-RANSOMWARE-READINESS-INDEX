@@ -3,7 +3,7 @@ Both are pure derivations from stored answers + log_sources; nothing here
 fabricates a capability that wasn't actually reported and evidenced."""
 from app.models.common import KillChainStage
 from app.models.detection import DetectionStageOut, LogGapAnalysisOut, LogSourceOut
-from app.repositories.collections import answers_repo, log_sources_repo, questions_repo
+from app.repositories.collections import answers_repo, log_sources_repo
 from app.services import attck_service, cis_cdm_service
 
 # Maps each kill-chain stage to the control_ids whose affirmative + evidenced/
@@ -19,7 +19,6 @@ STAGE_CONTROL_MAP: dict[str, list[str]] = {
 
 def compute_detection_matrix(assessment_id: str) -> list[DetectionStageOut]:
     answers = {a["control_id"]: a for a in answers_repo.find({"assessment_id": assessment_id})}
-    questions = {q["control_id"]: q for q in questions_repo.find({})}
     log_sources = log_sources_repo.find({"assessment_id": assessment_id})
     log_coverage_by_stage: dict[str, float] = {}
     for stage in STAGE_CONTROL_MAP:
