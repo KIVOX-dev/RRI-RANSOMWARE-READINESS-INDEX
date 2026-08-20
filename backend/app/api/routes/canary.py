@@ -29,14 +29,32 @@ def list_events(user: CurrentUser = Depends(get_current_user)):
 
 @router.post("/simulate/{canary_id}")
 def simulate(canary_id: str, user: CurrentUser = Depends(get_current_user)):
-    return canary_service.simulate_touch(canary_id)
+    return canary_service.simulate_touch(canary_id, user.organisation_id)
+
+
+@router.get("/stream-token")
+def stream_token(user: CurrentUser = Depends(get_current_user)):
+    """Mints a short-lived, single-purpose token for the SSE stream below.
+    EventSource can't set an Authorization header, so the token has to travel
+    in the URL — keeping it short-lived (unlike the normal session token)
+    limits how long a copy leaked into browser history / access logs stays
+    useful if it's ever captured."""
+    token = create_access_token(
+        user.id,
+        {"organisation_id": user.organisation_id, "scope": "canary_stream"},
+        expires_minutes=5,
+    )
+    return {"token": token}
 
 
 @router.get("/stream")
 async def stream(token: str = Query(...)):
     """SSE stream of live canary events for the caller's organisation. Token
     is passed as a query param since EventSource cannot set headers."""
-    payload = decode_access_token(token)
+    try:
+        payload = decode_access_token(token)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
     organisation_id = payload.get("organisation_id", "")
 
     async def event_generator():

@@ -1,10 +1,13 @@
 """A4 — Verification Probe ingest + signature verification. The backend never
 trusts probe output unless the Ed25519 signature validates against the known
 probe public key."""
+import json
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from app.core.crypto import get_probe_private_key_pem, load_or_create_probe_keypair, verify_probe_signature
-from app.models.probe import ProbeIngestRequest
+from app.models.probe import ProbeCheckIn, ProbeIngestRequest
 from app.repositories.collections import probe_checks_repo, probe_runs_repo
 from app.services import assessment_service, scoring_service
 
@@ -36,6 +39,18 @@ def ingest_probe_result(payload: ProbeIngestRequest) -> dict:
     message = f"{payload.assessment_id}|{payload.host_fingerprint}|{payload.timestamp}|{payload.checks_raw}"
     signature_valid = verify_probe_signature(message.encode("utf-8"), payload.signature, public_key_b64)
 
+    # The signature only covers `checks_raw` (the exact bytes the probe
+    # script signed). `checks` is a separately client-supplied field that a
+    # caller could edit independently while replaying a captured, still-valid
+    # `checks_raw`/`signature` pair — so the results that get stored/scored
+    # must always be parsed from the signed string itself, never trusted from
+    # `checks` directly.
+    try:
+        checks = [ProbeCheckIn(**c) for c in json.loads(payload.checks_raw)]
+    except (json.JSONDecodeError, ValidationError, TypeError):
+        checks = []
+        signature_valid = False
+
     probe_run_id = probe_runs_repo.insert(
         {
             "assessment_id": payload.assessment_id,
@@ -49,7 +64,7 @@ def ingest_probe_result(payload: ProbeIngestRequest) -> dict:
         }
     )
 
-    for check in payload.checks:
+    for check in checks:
         definition = CHECK_DEFINITIONS.get(check.check_id, {})
         probe_checks_repo.insert(
             {
